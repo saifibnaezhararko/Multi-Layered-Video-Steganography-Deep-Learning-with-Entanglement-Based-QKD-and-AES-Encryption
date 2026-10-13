@@ -1,0 +1,12 @@
+# StegaWe91 runtime dependencies
+tensorflow>=2.20
+keras>=3.12
+numpy
+pillow
+imageio
+opencv-python   # only used by app/models/DEEP_STEGO/Utils/enhance.py
+matplotlib
+PyQt5
+pycryptodome
+qiskit>=2.0
+qiskit-aer

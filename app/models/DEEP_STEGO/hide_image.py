@@ -3,11 +3,16 @@ from tensorflow.keras.models import load_model
 from PIL import Image
 import imageio
 from tkinter import filedialog
+from pathlib import Path
 from app.models.DEEP_STEGO.Utils.preprocessing import normalize_batch, denormalize_batch
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+MODEL_DIR = Path(__file__).resolve().parent / "models"
+IMAGES_DIR = PROJECT_ROOT / "images"
 
 
 def hide_image(cover_image_filepath, secret_image_filepath):
-    model = load_model("D:/Quantum_Physics/499/stegaWe91(capstone)/app/models/DEEP_STEGO/models/hide.h5")
+    model = load_model(str(MODEL_DIR / "hide.h5"), compile=False)
 
     secret_image_in = Image.open(secret_image_filepath).convert('RGB')
     print("secret image size : ", secret_image_in.size)
@@ -31,8 +36,9 @@ def hide_image(cover_image_filepath, secret_image_filepath):
     steg_image_out = np.squeeze(steg_image_out) * 255.0
     steg_image_out = np.uint8(steg_image_out)
 
-    imageio.imsave('D:/Quantum_Physics/499/stegaWe91(capstone)/images/steg_image.png', steg_image_out)
-    imageio.imsave('D:/Quantum_Physics/499/stegaWe91(capstone)/app/steg_image.png', steg_image_out)
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    imageio.imsave(str(IMAGES_DIR / 'steg_image.png'), steg_image_out)
+    imageio.imsave(str(PROJECT_ROOT / 'app' / 'steg_image.png'), steg_image_out)
 
     print("Saved steg image to steg_image.png")
 

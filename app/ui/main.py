@@ -1,21 +1,32 @@
-import os
-import os
 import sys
 
-import cv2
-import numpy as np
-import torch
+# IMPORTANT: these must be imported before PyQt5. They pull in TensorFlow, and on
+# Windows loading Qt's DLLs first makes _pywrap_tensorflow_internal fail to
+# initialise ("DLL load failed"). Keep TensorFlow ahead of Qt.
+from app.models.DEEP_STEGO.hide_image import hide_image
+from app.models.DEEP_STEGO.reveal_image import reveal_image
+from app.models.encryption import aes
+
 from PyQt5.QtCore import QFile, QTextStream
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QPixmap, QFont
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, \
-    QMessageBox, QFileDialog, QDialog, QRadioButton, QButtonGroup
+    QMessageBox, QFileDialog, QDialog, QRadioButton, QButtonGroup, QScrollArea
 
-from app.models.DEEP_STEGO.hide_image import hide_image
-from app.models.DEEP_STEGO.reveal_image import reveal_image
-from app.models.encryption import aes
 from app.ui.components.backgroundwidget import BackgroundWidget
 from app.ui.components.customtextbox import CustomTextBox, CustomTextBoxForImageGen
+
+from pathlib import Path
+
+UI_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = UI_DIR.parents[1]
+IMAGES_DIR = PROJECT_ROOT / "images"
+
+
+def ASSET(rel_path):
+    """Resolve a path relative to app/ui/ so the app runs from any working directory."""
+    return str(UI_DIR / rel_path)
+
 
 
 class MainAppWindow(QMainWindow):
@@ -55,10 +66,19 @@ class MainAppWindow(QMainWindow):
 
         # Set window properties
         self.setWindowTitle("StegaWe91")
-        self.setGeometry(200, 200, 1400, 800)
         self.setWindowIcon(QIcon(""))
         self.setStyleSheet("background-color: #2b2b2b;")
-        self.setFixedSize(self.size())
+
+        # The pages are laid out for a 1400x800 window, but a fixed window that big
+        # is clipped on smaller displays (e.g. 1366x768), hiding the bottom button
+        # row. Fit to the available screen area instead and stay resizable.
+        available = QApplication.primaryScreen().availableGeometry()
+        width = min(1400, available.width())
+        height = min(800, available.height())
+        self.resize(width, height)
+        self.setMinimumSize(min(900, width), min(500, height))
+        self.move(available.left() + (available.width() - width) // 2,
+                  available.top() + (available.height() - height) // 2)
         # self.setWindowFlags(Qt.FramelessWindowHint)
 
         # Set up the main window layout
@@ -122,13 +142,41 @@ class MainAppWindow(QMainWindow):
         self.main_content.setLayout(self.main_layout)
 
         # Add the side navigation and main content to the main window layout
+        main_content_scroll = QScrollArea()
+        main_content_scroll.setWidget(self.main_content)
+        main_content_scroll.setWidgetResizable(True)
+        main_content_scroll.setFrameShape(QScrollArea.NoFrame)
+        main_content_scroll.setStyleSheet("background-color: transparent;")
+
         main_layout.addWidget(side_navigation)
-        main_layout.addWidget(self.main_content)
+        main_layout.addWidget(main_content_scroll)
 
         # Set the main window layout
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+
+    def showEvent(self, event):
+        """Shrink the window once on first show if its frame overflows the screen.
+
+        resize() sizes the client area only, so the title bar and borders can still
+        push the bottom of the window under the taskbar on short displays.
+        """
+        super().showEvent(event)
+        if getattr(self, "_fitted_to_screen", False):
+            return
+        self._fitted_to_screen = True
+
+        available = QApplication.primaryScreen().availableGeometry()
+        frame = self.frameGeometry()
+        overflow_w = max(0, frame.width() - available.width())
+        overflow_h = max(0, frame.height() - available.height())
+        if overflow_w or overflow_h:
+            self.resize(self.width() - overflow_w, self.height() - overflow_h)
+
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
 
     def show_encryption_page(self):
         self.main_content.set_background_image("")
@@ -181,7 +229,7 @@ class MainAppWindow(QMainWindow):
 
         self.enc_display_label = QLabel()
         # self.enc_display_label.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap("assets/dummy_images/image_dummy.png")
+        pixmap = QPixmap(ASSET("assets/dummy_images/image_dummy.png"))
         self.enc_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
         image_display_layout.addWidget(self.enc_display_label)
 
@@ -260,7 +308,7 @@ class MainAppWindow(QMainWindow):
 
         self.dec_display_label = QLabel()
         self.dec_display_label.setAlignment(Qt.AlignLeft)
-        pixmap = QPixmap("assets/dummy_images/image_dummy.png")
+        pixmap = QPixmap(ASSET("assets/dummy_images/image_dummy.png"))
         self.dec_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
         image_display_layout.addWidget(self.dec_display_label)
 
@@ -341,19 +389,19 @@ class MainAppWindow(QMainWindow):
         image_display_layout = QHBoxLayout()
         self.cover_display_label = QLabel()
         self.cover_display_label.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap("assets/dummy_images/cover_image_dummy.png")
+        pixmap = QPixmap(ASSET("assets/dummy_images/cover_image_dummy.png"))
         self.cover_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
         image_display_layout.addWidget(self.cover_display_label)
 
         self.secret_display_label = QLabel()
         self.secret_display_label.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap("assets/dummy_images/secret_image_dummy.png")
+        pixmap = QPixmap(ASSET("assets/dummy_images/secret_image_dummy.png"))
         self.secret_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
         image_display_layout.addWidget(self.secret_display_label)
 
         self.steg_display_label = QLabel()
         self.steg_display_label.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap("assets/dummy_images/steg_image_dummy.png")
+        pixmap = QPixmap(ASSET("assets/dummy_images/steg_image_dummy.png"))
         self.steg_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
         image_display_layout.addWidget(self.steg_display_label)
 
@@ -425,13 +473,13 @@ class MainAppWindow(QMainWindow):
         image_layout = QHBoxLayout()
         self.container_display_label = QLabel()
         self.container_display_label.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap("assets/dummy_images/steg_image_dummy.png")
+        pixmap = QPixmap(ASSET("assets/dummy_images/steg_image_dummy.png"))
         self.container_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
         image_layout.addWidget(self.container_display_label)
         
         self.secret_out_display_label = QLabel()
         self.secret_out_display_label.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap("assets/dummy_images/secret_image_dummy.png")
+        pixmap = QPixmap(ASSET("assets/dummy_images/secret_image_dummy.png"))
         self.secret_out_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
         image_layout.addWidget(self.secret_out_display_label)
 
@@ -502,7 +550,7 @@ class MainAppWindow(QMainWindow):
         filepath, _ = file_dialog.getOpenFileName(self, "Select enc file")
         if filepath:
             self.enc_filepath = filepath
-            pixmap = QPixmap("assets/dummy_images/locked_image_dummy.png")
+            pixmap = QPixmap(ASSET("assets/dummy_images/locked_image_dummy.png"))
             label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
 
     def perform_hide(self, cover_filepath, secret_filepath):
@@ -511,7 +559,7 @@ class MainAppWindow(QMainWindow):
             return
         try:
             hide_image(cover_filepath, secret_filepath)
-            steg_image_path = "D:/Quantum_Physics/499/stegaWe91(capstone)/images/steg_image.png"
+            steg_image_path = str(IMAGES_DIR / "steg_image.png")
             pixmap = QPixmap(steg_image_path)
             self.steg_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
             self.download_steg_button.setEnabled(True)
@@ -524,7 +572,7 @@ class MainAppWindow(QMainWindow):
             return
         try:
             reveal_image(filepath)
-            secret_out_filepath = "D:/Quantum_Physics/499/stegaWe91(capstone)/images/secret_out.png"
+            secret_out_filepath = str(IMAGES_DIR / "secret_out.png")
             pixmap = QPixmap(secret_out_filepath)
             self.secret_out_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
             self.download_revealed_secret_image_button.setEnabled(True)
@@ -548,7 +596,7 @@ class MainAppWindow(QMainWindow):
             self.enc_img_text_label.setText("Encrypted!")
             self.enc_img_text_label.setStyleSheet(
                 "font-size: 16px; color: #00ff00; margin-bottom: 10px; font-weight: bold;")
-            pixmap = QPixmap("assets/dummy_images/locked_image_dummy.png")
+            pixmap = QPixmap(ASSET("assets/dummy_images/locked_image_dummy.png"))
             self.enc_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
             self.key_text_box.setText("")
         except:
@@ -613,7 +661,7 @@ class MainAppWindow(QMainWindow):
         dialog.exec_()
 
     def load_stylesheet(self):
-        stylesheet = QFile("styles/style.qss")
+        stylesheet = QFile(ASSET("styles/style.qss"))
         if stylesheet.open(QFile.ReadOnly | QFile.Text):
             stream = QTextStream(stylesheet)
             self.setStyleSheet(stream.readAll())
