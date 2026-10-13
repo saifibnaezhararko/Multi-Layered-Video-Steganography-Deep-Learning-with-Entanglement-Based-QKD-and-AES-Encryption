@@ -14,7 +14,8 @@ def unpack_secret(plaintext):
     name_length = int.from_bytes(plaintext[:2], 'big')
     name = plaintext[2:2 + name_length].decode('utf-8', errors='replace')
     # Only keep the base name, so a crafted name cannot write outside the output folder
-    return Path(name).name or "secret.bin", plaintext[2 + name_length:]
+    name = Path(name).name
+    return (name if name not in ('', '..') else "secret.bin"), plaintext[2 + name_length:]
 
 
 def reveal_audio(stego_audio_filepath, key, output_dir=None, progress=None):

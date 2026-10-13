@@ -29,7 +29,7 @@ def reveal_video(stego_video_filepath, output_filepath=None, batch_size=8, max_f
 
     if output_filepath is None:
         output_filepath = VIDEOS_DIR / "secret_out_video.avi"
-    writer, output_filepath = video_io.open_lossless_writer(output_filepath, fps)
+    writer, output_filepath = video_io.open_lossless_writer(output_filepath, fps, inputs=(stego_video_filepath,))
 
     done = 0
     try:

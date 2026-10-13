@@ -68,7 +68,9 @@ There is no test suite, linter or CI. Verify changes with scripts as described u
   - Output goes to `videos/`, which is gitignored.
   - An optional `progress(done, total)` callback reports progress.
   - OpenCV is BGR and the models are RGB, so `video_io` converts in both directions.
-- **The stego video must be lossless.** `video_io` writes PNG-in-AVI (fourcc `"png "`, which keeps RGB24) and forces the `.avi` suffix.
+- **The stego video must be lossless.** `video_io` writes PNG-in-AVI (fourcc `"png "`, which keeps RGB24).
+  - It *appends* `.avi` to an output path with another suffix (`x.mp4` → `x.mp4.avi`). Replacing the suffix could turn the output into an input's path.
+  - It refuses (`ValueError`) to write over an input video, checked with `os.path.samefile`: the writer truncates its file before any frame is read.
   - Verified exact round trips: PNG-in-AVI, FFV1, HuffYUV.
   - `mp4v` is lossy and revealing from it is ruined (≈8.8 dB PSNR).
   - Never switch the writer to a lossy codec.
@@ -92,9 +94,10 @@ There is no test suite, linter or CI. Verify changes with scripts as described u
 - **`hide_audio.py`:**
   - Plaintext is a 2-byte name length + the UTF-8 file name + the file bytes; a text message is stored as `message.txt`.
   - It is encrypted with `aes_payload.encrypt_bytes`.
-  - `n_lsb=None` picks the fewest LSBs that fit; if none fit, it raises `CapacityError`.
-  - It prints the SNR.
-- **`reveal_audio.py`:** extracts, decrypts (`WrongKeyError` if the GCM tag fails), and writes `audio/revealed/<basename>`; the name is sanitised with `Path(name).name`.
+  - `n_lsb=None` picks the fewest LSBs that fit; if none fit, it raises `CapacityError`. A forced `n_lsb` must be 1–4, and its `CapacityError` reports the secret size and the true maximum.
+  - It prints the SNR against the cover's AC energy (per-channel mean removed), so a DC offset doesn't inflate it.
+  - `write_wav` *appends* `.wav` to an output path with another suffix. Replacing the suffix once overwrote the cover (`--out song.final` → `song.wav`).
+- **`reveal_audio.py`:** extracts, decrypts (`WrongKeyError` if the GCM tag fails), and writes `audio/revealed/<basename>`; the name is sanitised with `Path(name).name`, falling back to `secret.bin` for an empty name or `..`.
 - Outputs and key files go to `audio/`, which is gitignored.
 - Only uncompressed PCM WAV is supported: `read_wav` raises `ValueError` for anything else. Lossy re-encoding destroys the payload.
 - **`app/models/encryption/aes_payload.py`:**

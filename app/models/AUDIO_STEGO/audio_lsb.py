@@ -41,7 +41,10 @@ def read_wav(path):
 
 
 def write_wav(path, params, raw):
-    path = Path(path).with_suffix('.wav')
+    path = Path(path)
+    if path.suffix.lower() != '.wav':
+        # Append rather than replace the suffix: 'song.final' -> 'song.wav' could overwrite the cover
+        path = path.with_name(path.name + '.wav')
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), 'wb') as wav:
         wav.setparams(params)
@@ -73,6 +76,17 @@ def sum_squares(values, chunk=1 << 20):
     for start in range(0, len(values), chunk):
         part = values[start:start + chunk].astype(np.float64)
         total += float(part @ part)
+    return total
+
+
+def ac_energy(samples, nchannels, chunk=1 << 20):
+    """Sum of squares after removing each channel's mean, so a DC offset does not count as signal."""
+    frames = samples.reshape(-1, nchannels)
+    means = frames.mean(axis=0, dtype=np.float64)
+    total = 0.0
+    for start in range(0, len(frames), chunk):
+        part = frames[start:start + chunk].astype(np.float64) - means
+        total += float(np.sum(part * part))
     return total
 
 

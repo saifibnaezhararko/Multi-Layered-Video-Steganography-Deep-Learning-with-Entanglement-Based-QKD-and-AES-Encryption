@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import cv2
@@ -67,18 +68,30 @@ def first_frame(path):
 
 
 def lossless_path(path):
-    """Force the lossless container suffix."""
-    return Path(path).with_suffix(LOSSLESS_SUFFIX)
+    """Add the lossless container suffix. It is appended ('x.mp4' -> 'x.mp4.avi'), so it can't turn into an input's path."""
+    path = Path(path)
+    return path if path.suffix.lower() == LOSSLESS_SUFFIX else path.with_name(path.name + LOSSLESS_SUFFIX)
 
 
-def open_lossless_writer(path, fps, size=MODEL_SIZE):
-    """Open a lossless video writer for size x size frames."""
+def open_lossless_writer(path, fps, size=MODEL_SIZE, inputs=()):
+    """Open a lossless video writer for size x size frames, refusing to write over any of the input videos."""
     path = lossless_path(path)
+    # The writer truncates its file before any frame is read, so writing over an input would destroy it
+    if any(_same_file(path, p) for p in inputs):
+        raise ValueError(f"Output {path} would overwrite an input video; choose another output path")
     path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*LOSSLESS_FOURCC), fps, (size, size))
     if not writer.isOpened():
         raise RuntimeError(f"Could not open a lossless video writer for {path}")
     return writer, path
+
+
+def _same_file(a, b):
+    """True if both paths name one existing file (handles case-insensitive file systems and links)."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def write_rgb(writer, frames):

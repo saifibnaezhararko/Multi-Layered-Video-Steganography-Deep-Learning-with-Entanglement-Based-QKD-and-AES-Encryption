@@ -41,17 +41,29 @@ def hide_audio(cover_audio_filepath, secret_filepath, key, output_filepath=None,
     print("cover audio : ", round(params.nframes / params.framerate, 2), "s,", params.framerate, "Hz,",
           params.nchannels, "channel(s),", 8 * params.sampwidth, "bit")
 
-    payload = aes_payload.encrypt_bytes(pack_secret(secret_name, secret_data), key)
-    if n_lsb is None:
-        fitting = [n for n in range(1, audio_lsb.MAX_LSB + 1) if audio_lsb.payload_capacity(n_samples, n) >= len(payload)]
-        if not fitting:
-            max_bytes = audio_lsb.payload_capacity(n_samples, audio_lsb.MAX_LSB) - (len(payload) - len(secret_data))
-            raise audio_lsb.CapacityError(
-                f"Secret is {len(secret_data)} bytes but this cover holds at most {max(0, max_bytes)} bytes "
-                f"(at {audio_lsb.MAX_LSB} LSBs per sample). Use a longer cover audio.")
-        n_lsb = fitting[0]
+    if n_lsb is not None and not 1 <= n_lsb <= audio_lsb.MAX_LSB:
+        raise ValueError(f"n_lsb must be between 1 and {audio_lsb.MAX_LSB}")
 
-    signal = audio_lsb.sum_squares(audio_lsb.samples_as_int(raw, params.sampwidth))
+    payload = aes_payload.encrypt_bytes(pack_secret(secret_name, secret_data), key)
+    overhead = len(payload) - len(secret_data)
+
+    def max_secret(n):
+        return max(0, audio_lsb.payload_capacity(n_samples, n) - overhead)
+
+    if n_lsb is None:
+        fitting = [n for n in range(1, audio_lsb.MAX_LSB + 1) if max_secret(n) >= len(secret_data)]
+        if not fitting:
+            raise audio_lsb.CapacityError(
+                f"Secret is {len(secret_data)} bytes but this cover holds at most {max_secret(audio_lsb.MAX_LSB)} "
+                f"bytes (at {audio_lsb.MAX_LSB} LSBs per sample). Use a longer cover audio.")
+        n_lsb = fitting[0]
+    elif max_secret(n_lsb) < len(secret_data):
+        raise audio_lsb.CapacityError(
+            f"Secret is {len(secret_data)} bytes but this cover holds at most {max_secret(n_lsb)} bytes "
+            f"at {n_lsb} LSB(s) per sample. Use more LSBs per sample or a longer cover audio.")
+
+    # SNR against the cover's AC energy: a DC offset is inaudible and would inflate it
+    signal = audio_lsb.ac_energy(audio_lsb.samples_as_int(raw, params.sampwidth), params.nchannels)
     cover_low = raw[::params.sampwidth].astype(np.int16)
     audio_lsb.embed(raw, params.sampwidth, payload, key, n_lsb)
     # Only each sample's lowest byte changes, so its difference is the sample difference

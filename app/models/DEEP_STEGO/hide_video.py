@@ -39,7 +39,8 @@ def hide_video(cover_video_filepath, secret_video_filepath, output_filepath=None
 
     if output_filepath is None:
         output_filepath = VIDEOS_DIR / "steg_video.avi"
-    writer, output_filepath = video_io.open_lossless_writer(output_filepath, fps)
+    writer, output_filepath = video_io.open_lossless_writer(output_filepath, fps,
+                                                            inputs=(cover_video_filepath, secret_video_filepath))
 
     cover_frames = video_io.read_frames(cover_video_filepath, max_frames=max_frames)
     secret_frames = video_io.read_frames(secret_video_filepath, max_frames=max_frames)
