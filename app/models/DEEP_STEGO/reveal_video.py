@@ -7,6 +7,7 @@ from tensorflow.keras.models import load_model
 from app.models.DEEP_STEGO.Utils.preprocessing import to_model_input, from_model_output
 from app.models.DEEP_STEGO.Utils.progressbarCL_animation import update_progress
 from app.models.DEEP_STEGO.Utils import video_io
+from app.models.output_paths import free_default
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MODEL_DIR = Path(__file__).resolve().parent / "models"
@@ -28,7 +29,7 @@ def reveal_video(stego_video_filepath, output_filepath=None, batch_size=8, max_f
     fps = fps if fps and fps > 0 else DEFAULT_FPS
 
     if output_filepath is None:
-        output_filepath = VIDEOS_DIR / "secret_out_video.avi"
+        output_filepath = free_default(VIDEOS_DIR / "secret_out_video.avi", (stego_video_filepath,))
     writer, output_filepath = video_io.open_lossless_writer(output_filepath, fps, inputs=(stego_video_filepath,))
 
     done = 0

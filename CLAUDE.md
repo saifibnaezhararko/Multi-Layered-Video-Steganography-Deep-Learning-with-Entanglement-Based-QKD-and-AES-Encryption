@@ -69,8 +69,10 @@ There is no test suite, linter or CI. Verify changes with scripts as described u
   - An optional `progress(done, total)` callback reports progress.
   - OpenCV is BGR and the models are RGB, so `video_io` converts in both directions.
 - **The stego video must be lossless.** `video_io` writes PNG-in-AVI (fourcc `"png "`, which keeps RGB24).
-  - It *appends* `.avi` to an output path with another suffix (`x.mp4` → `x.mp4.avi`). Replacing the suffix could turn the output into an input's path.
-  - It refuses (`ValueError`) to write over an input video, checked with `os.path.samefile`: the writer truncates its file before any frame is read.
+  - Output paths go through `app/models/output_paths.py`, shared with audio:
+    - `append_suffix` *appends* `.avi` (`x.mp4` → `x.mp4.avi`). Replacing the suffix could turn the output into an input's path.
+    - `ensure_not_input` refuses (`ValueError`) to write over an input. It uses `os.path.samefile`, so `..`, links and case-insensitive file systems are covered. This matters because the video writer truncates its file before any frame is read.
+    - `free_default` numbers the default output (`steg_video_1.avi`, …) when the default is itself an input, e.g. re-hiding into a stego from the GUI, which has no output-path field.
   - Verified exact round trips: PNG-in-AVI, FFV1, HuffYUV.
   - `mp4v` is lossy and revealing from it is ruined (≈8.8 dB PSNR).
   - Never switch the writer to a lossy codec.
@@ -96,8 +98,17 @@ There is no test suite, linter or CI. Verify changes with scripts as described u
   - It is encrypted with `aes_payload.encrypt_bytes`.
   - `n_lsb=None` picks the fewest LSBs that fit; if none fit, it raises `CapacityError`. A forced `n_lsb` must be 1–4, and its `CapacityError` reports the secret size and the true maximum.
   - It prints the SNR against the cover's AC energy (per-channel mean removed), so a DC offset doesn't inflate it.
-  - `write_wav` *appends* `.wav` to an output path with another suffix. Replacing the suffix once overwrote the cover (`--out song.final` → `song.wav`).
-- **`reveal_audio.py`:** extracts, decrypts (`WrongKeyError` if the GCM tag fails), and writes `audio/revealed/<basename>`; the name is sanitised with `Path(name).name`, falling back to `secret.bin` for an empty name or `..`.
+  - The output path is checked *before* any work, with the same `output_paths` helpers as video: `.wav` is appended, the output may never be the cover or the secret file (so in-place hiding is refused), and the default output is numbered if it collides. Replacing the suffix once overwrote the cover (`--out song.final` → `song.wav`).
+  - `write_wav` writes a temporary file and then `os.replace`s it, so a failed write never truncates an existing file.
+  - The fit test compares capacity with the real encrypted payload size. An empty secret still needs its ~30-byte overhead.
+- **`read_wav` trusts the data, not the header.** It trims the data to whole frames and sets `nframes` from it. Streamed WAVs (`ffmpeg … -f wav - > x.wav`) carry a placeholder frame count, and truncated files end mid-frame. Well-formed files are unaffected, so the format is unchanged.
+- **`reveal_audio.py`:** extracts, decrypts (`WrongKeyError` if the GCM tag fails), and writes `audio/revealed/<name>`.
+  - The stored name comes from whoever hid the secret, possibly on another OS, so `safe_filename` cleans it:
+    - It keeps the last component after `/` or `\`.
+    - It replaces `<>:"|?*` and control characters (`:` would open an NTFS alternate data stream).
+    - It strips trailing dots and spaces.
+    - It falls back to `secret.bin` for empty names, Windows device names (CON, NUL, COM1…) and names over 150 bytes (keeping the extension as `secret.<ext>`).
+  - If a folder already has that name, the file is saved as `<stem>_1<ext>`.
 - Outputs and key files go to `audio/`, which is gitignored.
 - Only uncompressed PCM WAV is supported: `read_wav` raises `ValueError` for anything else. Lossy re-encoding destroys the payload.
 - **`app/models/encryption/aes_payload.py`:**

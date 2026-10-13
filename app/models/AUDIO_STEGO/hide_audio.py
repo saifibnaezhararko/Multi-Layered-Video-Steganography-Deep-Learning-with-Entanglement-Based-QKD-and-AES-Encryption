@@ -6,6 +6,7 @@ import numpy as np
 from app.models.AUDIO_STEGO import audio_lsb
 from app.models.encryption import aes_payload
 from app.models.encryption.keyfile import load_or_create_key
+from app.models.output_paths import append_suffix, ensure_not_input, free_default
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 AUDIO_DIR = PROJECT_ROOT / "audio"
@@ -36,6 +37,11 @@ def hide_audio(cover_audio_filepath, secret_filepath, key, output_filepath=None,
     else:
         secret_name, secret_data = MESSAGE_FILENAME, message.encode('utf-8')
 
+    if output_filepath is None:
+        output_filepath = free_default(AUDIO_DIR / "steg_audio.wav", (cover_audio_filepath, secret_filepath))
+    output_filepath = append_suffix(output_filepath, '.wav')
+    ensure_not_input(output_filepath, (cover_audio_filepath, secret_filepath))
+
     params, raw = audio_lsb.read_wav(cover_audio_filepath)
     n_samples = params.nframes * params.nchannels
     print("cover audio : ", round(params.nframes / params.framerate, 2), "s,", params.framerate, "Hz,",
@@ -47,17 +53,20 @@ def hide_audio(cover_audio_filepath, secret_filepath, key, output_filepath=None,
     payload = aes_payload.encrypt_bytes(pack_secret(secret_name, secret_data), key)
     overhead = len(payload) - len(secret_data)
 
+    def fits(n):
+        return audio_lsb.payload_capacity(n_samples, n) >= len(payload)
+
     def max_secret(n):
         return max(0, audio_lsb.payload_capacity(n_samples, n) - overhead)
 
     if n_lsb is None:
-        fitting = [n for n in range(1, audio_lsb.MAX_LSB + 1) if max_secret(n) >= len(secret_data)]
+        fitting = [n for n in range(1, audio_lsb.MAX_LSB + 1) if fits(n)]
         if not fitting:
             raise audio_lsb.CapacityError(
                 f"Secret is {len(secret_data)} bytes but this cover holds at most {max_secret(audio_lsb.MAX_LSB)} "
                 f"bytes (at {audio_lsb.MAX_LSB} LSBs per sample). Use a longer cover audio.")
         n_lsb = fitting[0]
-    elif max_secret(n_lsb) < len(secret_data):
+    elif not fits(n_lsb):
         raise audio_lsb.CapacityError(
             f"Secret is {len(secret_data)} bytes but this cover holds at most {max_secret(n_lsb)} bytes "
             f"at {n_lsb} LSB(s) per sample. Use more LSBs per sample or a longer cover audio.")
@@ -69,11 +78,9 @@ def hide_audio(cover_audio_filepath, secret_filepath, key, output_filepath=None,
     # Only each sample's lowest byte changes, so its difference is the sample difference
     noise = audio_lsb.sum_squares(raw[::params.sampwidth] - cover_low)
 
-    if output_filepath is None:
-        output_filepath = AUDIO_DIR / "steg_audio.wav"
     output_filepath = audio_lsb.write_wav(output_filepath, params, raw)
 
-    snr = "inf" if noise == 0 or signal == 0 else f"{10 * np.log10(signal / noise):.1f}"
+    snr = "inf" if noise == 0 else "-inf" if signal == 0 else f"{10 * np.log10(signal / noise):.1f}"
     print(f"hid {secret_name} ({len(secret_data)} bytes) using {n_lsb} LSB(s) per sample, SNR {snr} dB")
     print("Saved steg audio to", output_filepath)
     if progress:

@@ -1,4 +1,5 @@
 import argparse
+import re
 from pathlib import Path
 
 from app.models.AUDIO_STEGO import audio_lsb
@@ -10,12 +11,31 @@ AUDIO_DIR = PROJECT_ROOT / "audio"
 DEFAULT_KEY_FILE = AUDIO_DIR / "e91_key.txt"
 
 
+FALLBACK_NAME = "secret.bin"
+INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+MAX_NAME_BYTES = 150
+
+
+def safe_filename(name):
+    """A file name that is valid on Windows, macOS and Linux and stays inside the output folder.
+
+    The name was stored by whoever hid the secret, possibly on another OS, so it is not trusted.
+    """
+    name = re.split(r'[/\\]', name)[-1]  # last path component, whatever the separator
+    name = INVALID_CHARS.sub('_', name).rstrip(' .')  # Windows drops trailing dots/spaces; ':' would open an ADS
+    if not name or name.split('.')[0].upper() in WINDOWS_RESERVED:
+        return FALLBACK_NAME
+    if len(name.encode('utf-8')) > MAX_NAME_BYTES:
+        suffix = Path(name).suffix
+        return "secret" + suffix if 0 < len(suffix.encode('utf-8')) <= 16 else FALLBACK_NAME
+    return name
+
+
 def unpack_secret(plaintext):
     name_length = int.from_bytes(plaintext[:2], 'big')
     name = plaintext[2:2 + name_length].decode('utf-8', errors='replace')
-    # Only keep the base name, so a crafted name cannot write outside the output folder
-    name = Path(name).name
-    return (name if name not in ('', '..') else "secret.bin"), plaintext[2 + name_length:]
+    return safe_filename(name), plaintext[2 + name_length:]
 
 
 def reveal_audio(stego_audio_filepath, key, output_dir=None, progress=None):
@@ -30,7 +50,9 @@ def reveal_audio(stego_audio_filepath, key, output_dir=None, progress=None):
 
     output_dir = Path(output_dir) if output_dir is not None else AUDIO_DIR / "revealed"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_filepath = output_dir / secret_name
+    output_filepath, i = output_dir / secret_name, 1
+    while output_filepath.is_dir():
+        output_filepath, i = output_dir / f"{Path(secret_name).stem}_{i}{Path(secret_name).suffix}", i + 1
     output_filepath.write_bytes(secret_data)
 
     print(f"Revealed {secret_name} ({len(secret_data)} bytes) to {output_filepath}")

@@ -1,8 +1,11 @@
 import hashlib
+import os
 import wave
 from pathlib import Path
 
 import numpy as np
+
+from app.models.output_paths import append_suffix
 
 '''
 LSB steganography for uncompressed PCM WAV audio.
@@ -37,18 +40,27 @@ def read_wav(path):
             frames = wav.readframes(params.nframes)
     except (wave.Error, EOFError) as e:
         raise ValueError(f"{Path(path).name}: only uncompressed PCM .wav audio is supported ({e})") from None
-    return params, np.frombuffer(frames, dtype=np.uint8).copy()
+    # Trust the data, not the header: streamed WAVs carry a placeholder frame count, and a
+    # truncated file can end mid-frame. Well-formed files are unaffected.
+    frame_size = params.nchannels * params.sampwidth
+    raw = np.frombuffer(frames, dtype=np.uint8)
+    raw = raw[:raw.size - raw.size % frame_size].copy()
+    return params._replace(nframes=raw.size // frame_size), raw
 
 
 def write_wav(path, params, raw):
-    path = Path(path)
-    if path.suffix.lower() != '.wav':
-        # Append rather than replace the suffix: 'song.final' -> 'song.wav' could overwrite the cover
-        path = path.with_name(path.name + '.wav')
+    path = append_suffix(path, '.wav')
     path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), 'wb') as wav:
-        wav.setparams(params)
-        wav.writeframes(raw.tobytes())
+    # Write a temporary file first, so a failed write never leaves a truncated file behind
+    temp = path.with_name(path.name + '.tmp')
+    try:
+        with wave.open(str(temp), 'wb') as wav:
+            wav.setparams(params)
+            wav.writeframes(raw.tobytes())
+        os.replace(temp, path)
+    finally:
+        if temp.exists():
+            temp.unlink()
     return path
 
 
