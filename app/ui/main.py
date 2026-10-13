@@ -8,6 +8,9 @@ from app.models.DEEP_STEGO.reveal_image import reveal_image
 from app.models.DEEP_STEGO.hide_video import hide_video
 from app.models.DEEP_STEGO.reveal_video import reveal_video
 from app.models.DEEP_STEGO.Utils import video_io
+from app.models.AUDIO_STEGO.hide_audio import hide_audio
+from app.models.AUDIO_STEGO.reveal_audio import reveal_audio
+from app.models.AUDIO_STEGO import audio_lsb
 from app.models.encryption import aes
 
 from PyQt5.QtCore import QFile, QTextStream
@@ -32,6 +35,8 @@ def ASSET(rel_path):
 
 
 VIDEO_FILTER = "Videos (*.mp4 *.avi *.mkv *.mov *.m4v *.webm);;All files (*)"
+AUDIO_FILTER = "WAV audio (*.wav);;All files (*)"
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
 
 
 def preview_pixmap(path, fallback="assets/dummy_images/image_dummy.png"):
@@ -49,8 +54,8 @@ def preview_pixmap(path, fallback="assets/dummy_images/image_dummy.png"):
     return QPixmap(ASSET(fallback))
 
 
-class VideoWorker(QThread):
-    """Runs hide_video / reveal_video off the UI thread so the window stays responsive."""
+class JobWorker(QThread):
+    """Runs a long job (video/audio hide or reveal) off the UI thread so the window stays responsive."""
     progress = pyqtSignal(int, int)
     done = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -106,12 +111,15 @@ class MainAppWindow(QMainWindow):
         self.cover_video_filepath = None
         self.secret_video_filepath = None
         self.stego_video_filepath = None
-        self.video_result_label = None
-        self.video_progress_bar = None
-        self.video_status_label = None
-        self.video_page_buttons = []
-        self.video_error_title = None
-        self.video_worker = None
+        self.cover_audio_filepath = None
+        self.secret_filepath_for_audio = None
+        self.stego_audio_filepath = None
+        self.job_on_done = None
+        self.job_progress_bar = None
+        self.job_status_label = None
+        self.job_page_buttons = []
+        self.job_error_title = None
+        self.job_worker = None
 
         # Set window properties
         self.setWindowTitle("StegaWe91")
@@ -159,6 +167,8 @@ class MainAppWindow(QMainWindow):
         image_reveal_button = QPushButton("Image Reveal")
         video_hiding_button = QPushButton("Video Hide")
         video_reveal_button = QPushButton("Video Reveal")
+        audio_hiding_button = QPushButton("Audio Hide")
+        audio_reveal_button = QPushButton("Audio Reveal")
 
         # Connect button signals to their corresponding slots
         encryption_button.clicked.connect(self.show_encryption_page)
@@ -167,6 +177,8 @@ class MainAppWindow(QMainWindow):
         image_reveal_button.clicked.connect(self.show_reveal_page)
         video_hiding_button.clicked.connect(self.show_video_hiding_page)
         video_reveal_button.clicked.connect(self.show_video_reveal_page)
+        audio_hiding_button.clicked.connect(self.show_audio_hiding_page)
+        audio_reveal_button.clicked.connect(self.show_audio_reveal_page)
 
         # Add buttons to the side navigation layout
         side_layout.addWidget(logo_label)
@@ -177,6 +189,8 @@ class MainAppWindow(QMainWindow):
         side_layout.addWidget(image_reveal_button)
         side_layout.addWidget(video_hiding_button)
         side_layout.addWidget(video_reveal_button)
+        side_layout.addWidget(audio_hiding_button)
+        side_layout.addWidget(audio_reveal_button)
 
         # Add a logout button
         logout_button = QPushButton("Exit")
@@ -185,9 +199,10 @@ class MainAppWindow(QMainWindow):
         side_layout.addStretch()
         side_layout.addWidget(logout_button)
 
-        # Disabled while a video job runs, so its page is not torn down mid-job
+        # Disabled while a video/audio job runs, so its page is not torn down mid-job
         self.nav_buttons = [image_hiding_button, encryption_button, decryption_button, image_reveal_button,
-                            video_hiding_button, video_reveal_button, logout_button]
+                            video_hiding_button, video_reveal_button, audio_hiding_button, audio_reveal_button,
+                            logout_button]
 
         # Set the layout for the side navigation widget
         side_navigation.setLayout(side_layout)
@@ -637,7 +652,7 @@ class MainAppWindow(QMainWindow):
         image_display_layout_widget.setLayout(image_display_layout)
         self.main_layout.addWidget(image_display_layout_widget)
 
-        self.add_video_progress_widgets()
+        self.add_job_progress_widgets("%v / %m frames")
 
         # button layout
         button_layout = QHBoxLayout()
@@ -660,7 +675,7 @@ class MainAppWindow(QMainWindow):
             lambda: self.perform_video_hide(self.cover_video_filepath, self.secret_video_filepath, steg_display_label))
         button_layout.addWidget(hide_button)
 
-        self.video_page_buttons = [clear_button, browse_cover_button, browse_secret_button, hide_button]
+        self.job_page_buttons = [clear_button, browse_cover_button, browse_secret_button, hide_button]
 
         button_layout_widget = QWidget()
         button_layout_widget.setLayout(button_layout)
@@ -723,7 +738,7 @@ class MainAppWindow(QMainWindow):
         image_layout_widget.setLayout(image_layout)
         self.main_layout.addWidget(image_layout_widget)
 
-        self.add_video_progress_widgets()
+        self.add_job_progress_widgets("%v / %m frames")
 
         # button layout
         button_layout = QHBoxLayout()
@@ -741,22 +756,186 @@ class MainAppWindow(QMainWindow):
             lambda: self.perform_video_reveal(self.stego_video_filepath, secret_out_display_label))
         button_layout.addWidget(reveal_button)
 
-        self.video_page_buttons = [clear_button, browse_stego_button, reveal_button]
+        self.job_page_buttons = [clear_button, browse_stego_button, reveal_button]
 
         button_layout_widget = QWidget()
         button_layout_widget.setLayout(button_layout)
         self.main_layout.addWidget(button_layout_widget)
 
-    def add_video_progress_widgets(self):
-        self.video_progress_bar = QProgressBar()
-        self.video_progress_bar.setValue(0)
-        self.video_progress_bar.setFormat("%v / %m frames")
-        self.main_layout.addWidget(self.video_progress_bar)
+    def show_audio_hiding_page(self):
+        self.main_content.set_background_image("")
+        self.cover_audio_filepath = None
+        self.secret_filepath_for_audio = None
+        self.clear_main_layout()
 
-        self.video_status_label = QLabel("")
-        self.video_status_label.setStyleSheet("font-size: 14px; color: #c6c6c6;")
-        self.video_status_label.setWordWrap(True)
-        self.main_layout.addWidget(self.video_status_label)
+        title_label = QLabel("<H2>Audio Steganography Hide</H2>")
+        title_label.setStyleSheet("font-size: 24px; color: #ffffff;")
+        title_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(title_label)
+
+        # Audio info
+        info_label = QLabel("<b><ul><li>The secret (any file, or a text message) is AES-256-GCM encrypted with the "
+                            "E91 key, then hidden in the least significant bits of the cover's samples</li>"
+                            "<li>Cover must be an uncompressed .wav; output: audio/steg_audio.wav</li>"
+                            "<li>Do not convert the steg audio to mp3/aac (or send it through apps that re-encode "
+                            "audio): that destroys the secret</li>"
+                            "<li>Reveal in this same session: the E91 key is regenerated every time the app starts"
+                            "</li></ul></b>")
+        info_label.setStyleSheet("font-size: 13px; color: #fae69e;")
+        info_label.setWordWrap(True)
+        info_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(info_label)
+
+        # label layout
+        label_layout = QHBoxLayout()
+        for text, color in (("Select cover audio:", "#c6c6c6"), ("Select secret file or type a message:", "#c6c6c6"),
+                            ("Generated steg audio:", "#00ff00")):
+            text_label = QLabel(text)
+            text_label.setAlignment(Qt.AlignCenter)
+            text_label.setStyleSheet(f"font-size: 16px; color: {color}; margin-bottom: 10px; font-weight: bold;")
+            label_layout.addWidget(text_label)
+        label_layout_widget = QWidget()
+        label_layout_widget.setLayout(label_layout)
+        self.main_layout.addWidget(label_layout_widget)
+
+        # display layout
+        display_layout = QHBoxLayout()
+        cover_info_label = self.audio_info_box("No cover audio selected")
+        display_layout.addWidget(cover_info_label)
+
+        secret_layout = QVBoxLayout()
+        secret_display_label = QLabel()
+        secret_display_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(ASSET("assets/dummy_images/secret_image_dummy.png"))
+        secret_display_label.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio))
+        secret_layout.addWidget(secret_display_label)
+        message_box = CustomTextBoxForImageGen()
+        message_box.setPlaceholderText("...or type a secret message")
+        secret_layout.addWidget(message_box)
+        secret_layout_widget = QWidget()
+        secret_layout_widget.setLayout(secret_layout)
+        display_layout.addWidget(secret_layout_widget)
+
+        steg_info_label = self.audio_info_box("")
+        display_layout.addWidget(steg_info_label)
+
+        display_layout_widget = QWidget()
+        display_layout_widget.setLayout(display_layout)
+        self.main_layout.addWidget(display_layout_widget)
+
+        self.add_job_progress_widgets("%p%")
+
+        # button layout
+        button_layout = QHBoxLayout()
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(lambda: self.show_audio_hiding_page())
+        button_layout.addWidget(clear_button)
+
+        browse_cover_button = QPushButton("Browse cover audio")
+        browse_cover_button.clicked.connect(lambda: self.select_cover_audio(cover_info_label))
+        button_layout.addWidget(browse_cover_button)
+
+        browse_secret_button = QPushButton("Browse secret file")
+        browse_secret_button.clicked.connect(lambda: self.select_secret_for_audio(secret_display_label))
+        button_layout.addWidget(browse_secret_button)
+
+        hide_button = QPushButton("Hide")
+        hide_button.clicked.connect(lambda: self.perform_audio_hide(message_box.text(), steg_info_label))
+        button_layout.addWidget(hide_button)
+
+        self.job_page_buttons = [clear_button, browse_cover_button, browse_secret_button, hide_button]
+
+        button_layout_widget = QWidget()
+        button_layout_widget.setLayout(button_layout)
+        self.main_layout.addWidget(button_layout_widget)
+
+    def show_audio_reveal_page(self):
+        self.main_content.set_background_image("")
+        self.stego_audio_filepath = None
+        self.clear_main_layout()
+
+        title_label = QLabel("<H2>Audio Steganography Reveal</H2>")
+        title_label.setStyleSheet("font-size: 24px; color: #ffffff;")
+        title_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(title_label)
+
+        info_label = QLabel("<b><ul><li>Extracts the hidden data with this session's E91 key (Bob's key) and "
+                            "decrypts it; output goes to audio/revealed/</li>"
+                            "<li>A wrong key, or audio that was modified or re-encoded, is detected</li></ul></b>")
+        info_label.setStyleSheet("font-size: 13px; color: #fae69e;")
+        info_label.setWordWrap(True)
+        info_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(info_label)
+
+        # label layout
+        label_layout = QHBoxLayout()
+        for text, color in (("Select steg audio:", "#c6c6c6"), ("Revealed secret:", "#00ff00")):
+            text_label = QLabel(text)
+            text_label.setAlignment(Qt.AlignCenter)
+            text_label.setStyleSheet(f"font-size: 16px; color: {color}; margin-bottom: 10px; font-weight: bold;")
+            label_layout.addWidget(text_label)
+        label_layout_widget = QWidget()
+        label_layout_widget.setLayout(label_layout)
+        self.main_layout.addWidget(label_layout_widget)
+
+        # display layout
+        display_layout = QHBoxLayout()
+        stego_info_label = self.audio_info_box("No steg audio selected")
+        display_layout.addWidget(stego_info_label)
+
+        secret_out_label = QLabel()
+        secret_out_label.setAlignment(Qt.AlignCenter)
+        secret_out_label.setWordWrap(True)
+        secret_out_label.setStyleSheet("font-size: 15px; color: #ffffff;")
+        pixmap = QPixmap(ASSET("assets/dummy_images/secret_image_dummy.png"))
+        secret_out_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+        display_layout.addWidget(secret_out_label)
+
+        display_layout_widget = QWidget()
+        display_layout_widget.setLayout(display_layout)
+        self.main_layout.addWidget(display_layout_widget)
+
+        self.add_job_progress_widgets("%p%")
+
+        # button layout
+        button_layout = QHBoxLayout()
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(lambda: self.show_audio_reveal_page())
+        button_layout.addWidget(clear_button)
+
+        browse_stego_button = QPushButton("Browse steg audio")
+        browse_stego_button.clicked.connect(lambda: self.select_stego_audio(stego_info_label))
+        button_layout.addWidget(browse_stego_button)
+
+        reveal_button = QPushButton("Reveal")
+        reveal_button.clicked.connect(lambda: self.perform_audio_reveal(self.stego_audio_filepath, secret_out_label))
+        button_layout.addWidget(reveal_button)
+
+        self.job_page_buttons = [clear_button, browse_stego_button, reveal_button]
+
+        button_layout_widget = QWidget()
+        button_layout_widget.setLayout(button_layout)
+        self.main_layout.addWidget(button_layout_widget)
+
+    def audio_info_box(self, text):
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignCenter)
+        label.setWordWrap(True)
+        label.setMinimumSize(256, 200)
+        label.setStyleSheet("font-size: 14px; color: #ffffff; border: 1.5px solid #9342ff; border-radius: 7px; "
+                            "padding: 10px;")
+        return label
+
+    def add_job_progress_widgets(self, progress_format):
+        self.job_progress_bar = QProgressBar()
+        self.job_progress_bar.setValue(0)
+        self.job_progress_bar.setFormat(progress_format)
+        self.main_layout.addWidget(self.job_progress_bar)
+
+        self.job_status_label = QLabel("")
+        self.job_status_label.setStyleSheet("font-size: 14px; color: #c6c6c6;")
+        self.job_status_label.setWordWrap(True)
+        self.main_layout.addWidget(self.job_status_label)
 
 
     def clear_main_layout(self):
@@ -816,49 +995,137 @@ class MainAppWindow(QMainWindow):
         if cover_filepath is None or secret_filepath is None:
             QMessageBox.information(self, "Hiding Error", "Please select the videos first.")
             return
-        self.start_video_job(hide_video, (cover_filepath, secret_filepath), result_label, "Video Hiding Error")
+        self.start_job(hide_video, (cover_filepath, secret_filepath),
+                       lambda output: self.show_video_result(output, result_label), "Video Hiding Error")
 
     def perform_video_reveal(self, filepath, result_label):
         if filepath is None:
             QMessageBox.information(self, "Revealing Error", "Please select the video first.")
             return
-        self.start_video_job(reveal_video, (filepath,), result_label, "Video Revealing Error")
+        self.start_job(reveal_video, (filepath,),
+                       lambda output: self.show_video_result(output, result_label), "Video Revealing Error")
 
-    def start_video_job(self, func, args, result_label, error_title):
-        self.set_video_controls_enabled(False)
-        self.video_result_label = result_label
-        self.video_error_title = error_title
-        self.video_progress_bar.setValue(0)
-        self.video_status_label.setText("Processing ...")
+    def select_cover_audio(self, info_label):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select cover audio", "", AUDIO_FILTER)
+        if not filepath:
+            return
+        try:
+            duration, rate, channels, bits, n_samples = audio_lsb.wav_info(filepath)
+        except ValueError as e:
+            QMessageBox.warning(self, "Cover Audio Error", str(e))
+            return
+        self.cover_audio_filepath = filepath
+        info_label.setText(f"<b>{Path(filepath).name}</b><br>{duration:.1f} s, {rate} Hz, {channels} channel(s), "
+                           f"{bits}-bit<br><br>Can hide about {audio_lsb.payload_capacity(n_samples, 1) // 1024} KB "
+                           f"(1 LSB per sample)<br>up to {audio_lsb.payload_capacity(n_samples, 4) // 1024} KB "
+                           f"(4 LSBs)")
 
-        self.video_worker = VideoWorker(func, *args)
-        self.video_worker.progress.connect(self.on_video_progress)
-        self.video_worker.done.connect(self.on_video_done)
-        self.video_worker.failed.connect(self.on_video_failed)
-        self.video_worker.start()
+    def select_secret_for_audio(self, label):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select secret file")
+        if not filepath:
+            return
+        self.secret_filepath_for_audio = filepath
+        self.show_file_in_label(filepath, label, 200)
 
-    def on_video_progress(self, done, total):
-        self.video_progress_bar.setMaximum(total)
-        self.video_progress_bar.setValue(done)
+    def select_stego_audio(self, info_label):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select steg audio", "", AUDIO_FILTER)
+        if not filepath:
+            return
+        try:
+            duration, rate, channels, bits, _ = audio_lsb.wav_info(filepath)
+        except ValueError as e:
+            QMessageBox.warning(self, "Steg Audio Error", str(e))
+            return
+        self.stego_audio_filepath = filepath
+        info_label.setText(f"<b>{Path(filepath).name}</b><br>{duration:.1f} s, {rate} Hz, {channels} channel(s), "
+                           f"{bits}-bit")
 
-    def on_video_done(self, output_filepath):
-        self.set_video_controls_enabled(True)
-        self.video_result_label.setPixmap(preview_pixmap(output_filepath).scaled(256, 256, Qt.KeepAspectRatio))
-        self.video_status_label.setText(f"Saved to {output_filepath}")
+    def show_file_in_label(self, filepath, label, size=256):
+        """Image or video: thumbnail. Text: its content. Anything else: name and size."""
+        path = Path(filepath)
+        if path.suffix.lower() in IMAGE_EXTENSIONS or video_io.is_video(path):
+            label.setPixmap(preview_pixmap(str(path)).scaled(size, size, Qt.KeepAspectRatio))
+        elif path.suffix.lower() == ".txt":
+            text = path.read_text(encoding="utf-8", errors="replace")
+            label.setText(f"<b>{path.name}</b><br><br>" + (text[:1000] + (" ..." if len(text) > 1000 else ""))
+                          .replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>"))
+        else:
+            label.setText(f"<b>{path.name}</b><br>{path.stat().st_size / 1024:.1f} KB")
 
-    def on_video_failed(self, message):
-        self.set_video_controls_enabled(True)
-        self.video_status_label.setText("Failed.")
-        QMessageBox.critical(self, self.video_error_title, message)
+    def perform_audio_hide(self, message, result_label):
+        message = message or None
+        if self.cover_audio_filepath is None:
+            QMessageBox.information(self, "Hiding Error", "Please select the cover audio first.")
+            return
+        if (self.secret_filepath_for_audio is None) == (message is None):
+            QMessageBox.information(self, "Hiding Error",
+                                    "Select a secret file or type a message (not both; use Clear to start over).")
+            return
+        self.start_job(hide_audio, (self.cover_audio_filepath, self.secret_filepath_for_audio, aes.aliceKey, None,
+                                    message),
+                       lambda output: self.show_audio_result(output, result_label), "Audio Hiding Error")
 
-    def set_video_controls_enabled(self, enabled):
-        for button in self.nav_buttons + self.video_page_buttons:
+    def show_audio_result(self, output_filepath, result_label):
+        duration, rate, channels, bits, _ = audio_lsb.wav_info(output_filepath)
+        result_label.setText(f"<b>{Path(output_filepath).name}</b><br>{duration:.1f} s, {rate} Hz, "
+                             f"{channels} channel(s), {bits}-bit<br><br>Same length and format as the cover")
+        self.job_status_label.setText(f"Saved to {output_filepath}")
+
+    def perform_audio_reveal(self, filepath, result_label):
+        if filepath is None:
+            QMessageBox.information(self, "Revealing Error", "Please select the steg audio first.")
+            return
+        self.start_job(reveal_audio, (filepath, aes.bobKey),
+                       lambda output: self.show_revealed_secret(output, result_label), "Audio Revealing Error")
+
+    def show_revealed_secret(self, output_filepath, result_label):
+        self.show_file_in_label(output_filepath, result_label)
+        self.job_status_label.setText(f"Revealed secret saved to {output_filepath}")
+
+    def show_video_result(self, output_filepath, result_label):
+        result_label.setPixmap(preview_pixmap(output_filepath).scaled(256, 256, Qt.KeepAspectRatio))
+        self.job_status_label.setText(f"Saved to {output_filepath}")
+
+    def start_job(self, func, args, on_done, error_title):
+        """Run func(*args, progress=...) in a JobWorker; on_done(output) runs on the UI thread afterwards."""
+        self.set_job_controls_enabled(False)
+        self.job_on_done = on_done
+        self.job_error_title = error_title
+        self.job_progress_bar.setRange(0, 0)  # busy until the first progress report
+        self.job_status_label.setText("Processing ...")
+
+        self.job_worker = JobWorker(func, *args)
+        self.job_worker.progress.connect(self.on_job_progress)
+        self.job_worker.done.connect(self.on_job_done)
+        self.job_worker.failed.connect(self.on_job_failed)
+        self.job_worker.start()
+
+    def on_job_progress(self, done, total):
+        self.job_progress_bar.setRange(0, total)
+        self.job_progress_bar.setValue(done)
+
+    def on_job_done(self, output_filepath):
+        self.set_job_controls_enabled(True)
+        if self.job_progress_bar.maximum() == 0:
+            self.job_progress_bar.setRange(0, 1)
+            self.job_progress_bar.setValue(1)
+        self.job_on_done(output_filepath)
+
+    def on_job_failed(self, message):
+        self.set_job_controls_enabled(True)
+        self.job_progress_bar.setRange(0, 1)
+        self.job_progress_bar.setValue(0)
+        self.job_status_label.setText("Failed.")
+        QMessageBox.critical(self, self.job_error_title, message)
+
+    def set_job_controls_enabled(self, enabled):
+        for button in self.nav_buttons + self.job_page_buttons:
             button.setEnabled(enabled)
 
     def closeEvent(self, event):
         # Closing while the worker thread runs would destroy a running QThread
-        if self.video_worker is not None and self.video_worker.isRunning():
-            QMessageBox.information(self, "Please wait", "A video is still being processed.")
+        if self.job_worker is not None and self.job_worker.isRunning():
+            QMessageBox.information(self, "Please wait", "A file is still being processed.")
             event.ignore()
             return
         super().closeEvent(event)

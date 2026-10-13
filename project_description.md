@@ -75,9 +75,39 @@ QKD + AES same thake: steg video (`.avi`) ke Encryption page e encrypt kora jay 
 - Output **224×224**, audio nei, frame shonkhya = duita video er moddhe chhoto tar shoman, fps = cover er fps.
 - E91 key protibar app start e notun hoy, tai encrypt ar decrypt same session e korte hobe.
 
+## 2c. Audio Steganography (`app/models/AUDIO_STEGO/`)
+
+Cover hocche ekta **WAV audio**, secret hote pare **je kono file** (text, image, audio clip, steg video) ba ekta **text message**. Ekhane order ulta: age **encrypt**, tarpor **lukano** – tai je file pathano hoy sheta shunte shadharon gaan/audio er motoi, dekhe bojha jay na je bhitore kichu ache.
+
+**Flow:**
+1. Secret → **AES-256-GCM** encrypt (key = E91 key er SHA-256, image/video er moto same key)
+2. Encrypted data → cover audio er sample gulor **LSB (least significant bit)** e boshano hoy
+3. Kon kon sample e bit boshbe sheta **key diye shuffle** kora – tai change gulo pura file e chhoriye thake, key chhara khuje pawa jay na
+4. Secret fit korate joto kom LSB lage (1–4) sheta nijei choose kore (`--bits` diye fix kora jay)
+
+- **`audio_lsb.py`** – WAV read/write, bit embed/extract, capacity hishab (8/16/24/32-bit PCM, mono/stereo)
+- **`hide_audio.py`** – `hide_audio(cover, secret_file, key, message=...)` → `audio/steg_audio.wav`
+- **`reveal_audio.py`** – `reveal_audio(stego, key)` → `audio/revealed/<original file name>`
+- **`app/models/encryption/aes_payload.py`** – AES-GCM (bhul key ba file e ekta bit change holeo dhora pore)
+- **`app/models/encryption/keyfile.py`** – E91 key file e save/load (CLI te hide ar reveal alada process e chole, tai key file lage)
+
+Terminal theke (repo root e):
+```
+python -m app.models.AUDIO_STEGO.hide_audio --cover cover.wav --secret secret.png
+python -m app.models.AUDIO_STEGO.hide_audio --cover cover.wav --message "5 tay dekha hobe"
+python -m app.models.AUDIO_STEGO.reveal_audio --stego audio/steg_audio.wav
+```
+Prothombar hide korle E91 simulation chole ar key `audio/e91_key.txt` e save hoy; reveal sheta use kore (`--key-file` diye onno file deya jay). **Key file kauke diba na / git e dibe na** (`audio/` gitignored).
+
+⚠️ Note:
+- Shudhu **WAV** (uncompressed PCM). MP3/AAC hole age WAV e convert koro (Audacity ba ffmpeg).
+- Steg audio ke mp3 e convert korle ba WhatsApp e voice hishebe pathale hidden data nosto hoye jay (reveal e error dibe).
+- Capacity: 44.1 kHz stereo 16-bit audio te proti second e ~11 KB (1 LSB) – 30 second e ~322 KB, 4 LSB e ~1.3 MB.
+- Quality: 16-bit cover e 1 LSB e SNR ~80–110 dB (shona jay na). 8-bit cover e change beshi (SNR ~55 dB).
+
 ## 3. `app/ui/` – GUI (`main.py`)
 
-`MainAppWindow` class, dark theme. Left sidebar e 6 ta button:
+`MainAppWindow` class, dark theme. Left sidebar e 8 ta button:
 
 | Button | Kaj |
 |---|---|
@@ -87,6 +117,8 @@ QKD + AES same thake: steg video (`.avi`) ke Encryption page e encrypt kora jay 
 | **Image Reveal** | steg image → `reveal_image()` → secret ferot |
 | **Video Hide** | cover + secret video → `hide_video()` → steg video (background thread, progress bar) |
 | **Video Reveal** | steg video → `reveal_video()` → secret video ferot |
+| **Audio Hide** | cover WAV + secret file / message → `hide_audio()` (aliceKey diye encrypt) → steg audio |
+| **Audio Reveal** | steg WAV → `reveal_audio()` (bobKey) → secret ferot; image hole preview, text hole message dekhay |
 
 - `components/` – custom background widget, text box
 - `styles/style.qss` – styling

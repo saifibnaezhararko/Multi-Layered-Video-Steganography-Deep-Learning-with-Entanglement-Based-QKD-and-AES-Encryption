@@ -11,6 +11,8 @@ StegaWe91: the implementation behind the paper in the repo root, *Multi-layered 
 3. SHA-256 of that key is the AES-256 key that encrypts the stego file.
 4. The file is decrypted, then the CNN reveals the secret.
 
+Audio steganography (the `audio-steg` branch) runs in the opposite order: it **encrypts first, then hides**. The secret (any file or a text message) is AES-256-GCM encrypted with the E91-derived key, then written into a WAV cover's sample LSBs, so the transmitted file is ordinary-looking audio.
+
 `project_description.md` is a Banglish walkthrough of the code; keep it in sync when adding features. The user writes in Banglish and English.
 
 ## Commands
@@ -24,6 +26,10 @@ python -m app.ui.main                       # desktop app (PyQt5)
 # video-in-video steganography (CLI)
 python -m app.models.DEEP_STEGO.hide_video --cover cover.mp4 --secret secret.mp4 [--out x.avi] [--max-frames N] [--batch-size 8]
 python -m app.models.DEEP_STEGO.reveal_video --stego videos/steg_video.avi [--out y.avi]
+
+# audio steganography (CLI); the first hide runs E91 and saves the key to audio/e91_key.txt
+python -m app.models.AUDIO_STEGO.hide_audio --cover cover.wav (--secret file | --message "text") [--out x.wav] [--bits 1-4] [--key-file k.txt]
+python -m app.models.AUDIO_STEGO.reveal_audio --stego audio/steg_audio.wav [--out-dir dir] [--key-file k.txt]
 ```
 
 There is no test suite, linter or CI. Verify changes with scripts as described under "Verifying changes".
@@ -73,16 +79,43 @@ There is no test suite, linter or CI. Verify changes with scripts as described u
   - `Utils/enhance.py` is a video-enhance script that parses argv at import.
   - `app/main_CLI_v1.py` imports modules that don't exist (`blowfish`, `ESRGAN`).
 
+### Audio steganography: `app/models/AUDIO_STEGO/`
+- **`audio_lsb.py`** (pure numpy plus the stdlib `wave` module):
+  - Bits go into the low bits of each sample's least significant byte (`raw[::sampwidth]`, since WAV PCM is little-endian). This works for 8/16/24/32-bit audio, mono or stereo.
+  - Which samples are used is a key-seeded shuffle: `np.random.RandomState`, seeded from `sha256("audio-lsb-positions:" + key)`.
+  - Use the legacy `RandomState` deliberately: its stream is frozen across numpy versions, so hide and reveal agree on any install.
+  - The shuffle allocates one `uint32` per sample.
+- **Layout in shuffled order:**
+  - 40 header samples at 1 LSB each: `n_lsb` (8 bits) + payload length (32 bits).
+  - Then the payload at `n_lsb` (1–4) bits per sample.
+  - There is no plaintext magic marker: a wrong key reads a garbage header, and `extract` raises `NoHiddenDataError`.
+- **`hide_audio.py`:**
+  - Plaintext is a 2-byte name length + the UTF-8 file name + the file bytes; a text message is stored as `message.txt`.
+  - It is encrypted with `aes_payload.encrypt_bytes`.
+  - `n_lsb=None` picks the fewest LSBs that fit; if none fit, it raises `CapacityError`.
+  - It prints the SNR.
+- **`reveal_audio.py`:** extracts, decrypts (`WrongKeyError` if the GCM tag fails), and writes `audio/revealed/<basename>`; the name is sanitised with `Path(name).name`.
+- Outputs and key files go to `audio/`, which is gitignored.
+- Only uncompressed PCM WAV is supported: `read_wav` raises `ValueError` for anything else. Lossy re-encoding destroys the payload.
+- **`app/models/encryption/aes_payload.py`:**
+  - In-memory AES-256-GCM, laid out as `nonce(12) + tag(16) + ciphertext`.
+  - It uses the same SHA-256 key derivation as `aes.py`.
+  - It does *not* import `aes`, so it doesn't trigger the E91 simulation.
+- **`app/models/encryption/keyfile.py`:** `load_or_create_key(path)` runs E91 (by importing `aes`) only when the key file doesn't exist. The CLI needs this because hide and reveal run in separate processes; the GUI uses the in-session `aes.aliceKey`/`bobKey`.
+
 ### GUI: `app/ui/main.py`
 - **Import order matters:** the `app.models…` imports (TensorFlow) must come **before** PyQt5, or Windows fails with a TF DLL error. Put new model imports next to the existing ones at the top.
 - **Pages:** one `MainAppWindow`. Each sidebar button calls a `show_*_page()` that clears `main_layout` (`deleteLater`) and rebuilds the page.
-  - Pages: Image Hide, Encryption, Decryption, Image Reveal, Video Hide, Video Reveal.
+  - Pages: Image Hide, Encryption, Decryption, Image Reveal, Video Hide, Video Reveal, Audio Hide, Audio Reveal.
   - Encrypt and decrypt call `aes.encrypt(path, aes.aliceKey)` and `aes.decrypt(path, aes.bobKey)`.
-- **Video jobs** run in `VideoWorker(QThread)` with signals `progress(int, int)`, `done(str)` and `failed(str)`.
-  - While a job runs, `set_video_controls_enabled(False)` disables the sidebar and page buttons, so the page can't be torn down mid-job.
+- **Long jobs** (video and audio hide/reveal) go through `start_job(func, args, on_done, error_title)`.
+  - It runs `func(*args, progress=...)` in a `JobWorker(QThread)` with signals `progress(int, int)`, `done(str)` and `failed(str)`.
+  - `on_done(output_path)` runs on the UI thread, called from the bound slot `on_job_done`. Connect worker signals to bound methods, not lambdas.
+  - While a job runs, `set_job_controls_enabled(False)` disables the sidebar and `self.job_page_buttons`, so the page can't be torn down mid-job.
+  - Each job page calls `add_job_progress_widgets(format)` and sets `job_page_buttons`.
   - `closeEvent` refuses to close while the worker runs.
-  - Connect worker signals to bound methods, not lambdas.
 - **`preview_pixmap(path)`** returns a thumbnail for an image or a video's first frame, falling back to a dummy image.
+- **`show_file_in_label`** shows a revealed secret: a thumbnail for an image or video, the text for `.txt`, otherwise the name and size.
 - **Pre-existing patterns to know:**
   - The older handlers end in a bare `except: QMessageBox()`, which shows nothing, so errors are silently swallowed.
   - `download_*_button` and `key_text_box*` are never created (they stay `None`), so every image hide/reveal/encrypt/decrypt raises `AttributeError` *after* doing its work, and the bare except swallows it.
@@ -106,7 +139,16 @@ Checks that proved useful:
   - After switching pages, call `app.sendPostedEvents(None, QEvent.DeferredDelete)`. `processEvents()` doesn't run `deleteLater`, so the old page's buttons stay findable and visible.
   - Wait for workers with a `QEventLoop` on `finished`. **Never** call `QThread.wait()` on the main thread: it deadlocks with the worker's Python code.
   - The offscreen screen is 800×600, so call `resize(1400, 800)` *after* `show()` to get realistic screenshots.
-- Delete generated `*.cpython-313.pyc` files (only 3.12 `.pyc` files are tracked) and the `videos/` output before committing.
+- **Audio:**
+  - The repo has no audio files, so make synthetic WAV covers with numpy + `wave` (tones + noise; 8/16/24-bit, mono and stereo, a long cover for big secrets).
+  - Check that round trips are byte-identical and that `getparams()` is unchanged.
+  - Check that max |sample diff| ≤ 2^n_lsb − 1.
+  - Check the failures:
+    - a wrong key and a cover with no hidden data raise `NoHiddenDataError`
+    - flipping one payload bit at a shuffled position raises `WrongKeyError`
+    - an oversized secret raises `CapacityError`
+    - a non-WAV cover raises `ValueError`
+- Delete generated `*.cpython-313.pyc` files (only 3.12 `.pyc` files are tracked) and the `videos/` and `audio/` output before committing.
 
 ## Session history
 
@@ -153,9 +195,28 @@ Not yet done:
 - Testing on a real Windows display.
 
 **Known open issues** (deliberately out of scope so far):
-- The E91 key is regenerated on every launch; it should be persisted.
+- The GUI regenerates the E91 key on every launch. The audio CLI persists it with `keyfile.py`; the GUI doesn't yet.
 - `encrypt` overwrites its input.
 - There is no CHSH check.
 - `train.py` and `eval.py` are broken.
 - `main_CLI_v1.py` imports modules that don't exist.
 - Older UI handlers silently swallow errors.
+
+**`audio-steg` branch** (stacked on PR #1): audio steganography with encrypt-then-hide.
+- **New files:** `AUDIO_STEGO/{audio_lsb,hide_audio,reveal_audio}.py`, `encryption/aes_payload.py`, `encryption/keyfile.py`.
+- **GUI:** Audio Hide and Audio Reveal pages. Hide takes a cover WAV and either a secret file or a typed message, and shows capacity. Reveal shows an image or the text.
+- **Refactor:** the video job helpers were renamed to the generic `JobWorker`/`start_job`/`job_*`.
+- **`.gitignore`:** added `audio/`.
+
+Results (synthetic covers):
+- **Round trips:** byte-identical for text, a JPEG, a WAV clip, and the 4.4 MB stego `.avi` (inside a 120 s cover, auto 4 LSBs). Covers were 8/16/24-bit.
+- **SNR:**
+  - 16-bit stereo at 1 LSB: 80–113 dB
+  - 24-bit: about 130 dB
+  - 8-bit: about 56 dB
+  - 4.4 MB secret at 4 LSBs: 59 dB
+- **Speed:** hiding the 4.4 MB secret took 5.7 s; reveal took 1.5 s.
+- **Failure detection:** a wrong key, re-quantisation, and a single flipped payload bit were all detected.
+- **CLI:** the key file works across processes.
+- **Headless GUI:** the full flow passed, including the video pages after the rename.
+

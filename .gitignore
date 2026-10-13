@@ -1,2 +1,5 @@
 # Generated video outputs (hide_video / reveal_video)
 videos/
+
+# Generated audio outputs and E91 key files (hide_audio / reveal_audio); keep keys private
+audio/
