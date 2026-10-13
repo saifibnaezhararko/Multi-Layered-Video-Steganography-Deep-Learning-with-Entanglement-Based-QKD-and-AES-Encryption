@@ -53,9 +53,31 @@ Baluja er "Hiding Images in Plain Sight" paper er moto CNN based approach.
 - **`checkpoints/`** – training checkpoint (`steg_model-06-0.03.hdf5`).
 - **`Utils/`** – helper: `preprocessing.py` (normalize), `customLossWeight.py` (loss), `eval.py`, `enhance.py` (opencv), `test.py`.
 
-## 3. `app/ui/` – GUI (`main.py`, 676 line)
+## 2b. Video Steganography (video-in-video)
 
-`MainAppWindow` class, dark theme. Left sidebar e 4 ta button:
+Secret video er frame *i* ke cover video er frame *i* er bhitore lukano hoy, same `hide.h5` / `reveal.h5` model diye (frame-by-frame, batch e).
+
+- **`hide_video.py`** – `hide_video(cover, secret)` → `videos/steg_video.avi`
+- **`reveal_video.py`** – `reveal_video(stego)` → `videos/secret_out_video.avi`
+- **`Utils/video_io.py`** – OpenCV diye frame read/write (BGR↔RGB, 224×224 resize, lossless writer)
+
+Terminal theke (repo root e):
+```
+python -m app.models.DEEP_STEGO.hide_video --cover cover.mp4 --secret secret.mp4
+python -m app.models.DEEP_STEGO.reveal_video --stego videos/steg_video.avi
+```
+(`--max-frames 30` dile shudhu prothom 30 frame – quick test er jonno; CPU te frame beshi hole shomoy beshi lage.)
+
+QKD + AES same thake: steg video (`.avi`) ke Encryption page e encrypt kora jay (E91 key → SHA-256 → AES), decrypt korle `steg_video.dec.avi` hoy, tarpor Video Reveal.
+
+⚠️ Note:
+- Steg video **lossless** (PNG-in-AVI) – eta mp4 e convert korle ba WhatsApp/YouTube e upload korle hidden video nosto hoye jay.
+- Output **224×224**, audio nei, frame shonkhya = duita video er moddhe chhoto tar shoman, fps = cover er fps.
+- E91 key protibar app start e notun hoy, tai encrypt ar decrypt same session e korte hobe.
+
+## 3. `app/ui/` – GUI (`main.py`)
+
+`MainAppWindow` class, dark theme. Left sidebar e 6 ta button:
 
 | Button | Kaj |
 |---|---|
@@ -63,6 +85,8 @@ Baluja er "Hiding Images in Plain Sight" paper er moto CNN based approach.
 | **Encryption** | image select → `aes.encrypt(file, aes.aliceKey)` |
 | **Decryption** | encrypted file → `aes.decrypt(file, aes.bobKey)` |
 | **Image Reveal** | steg image → `reveal_image()` → secret ferot |
+| **Video Hide** | cover + secret video → `hide_video()` → steg video (background thread, progress bar) |
+| **Video Reveal** | steg video → `reveal_video()` → secret video ferot |
 
 - `components/` – custom background widget, text box
 - `styles/style.qss` – styling

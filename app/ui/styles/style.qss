@@ -21,6 +21,21 @@ QPushButton:hover {
   box-shadow: 0 0 30px 5px rgba(0, 142, 236, 0.815);
   border: 1.5px solid transparent;
 }
+QPushButton:disabled {
+  color: #777777;
+  border: 1.5px solid #555555;
+}
+QProgressBar {
+  border: 1.5px solid #9342ff;
+  border-radius: 7px;
+  color: #ffffff;
+  text-align: center;
+  height: 22px;
+}
+QProgressBar::chunk {
+  background-color: #9342ff;
+  border-radius: 6px;
+}
 QRadioButton{
     font-size: 16px;
     color: #fae69e;

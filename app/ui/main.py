@@ -5,13 +5,16 @@ import sys
 # initialise ("DLL load failed"). Keep TensorFlow ahead of Qt.
 from app.models.DEEP_STEGO.hide_image import hide_image
 from app.models.DEEP_STEGO.reveal_image import reveal_image
+from app.models.DEEP_STEGO.hide_video import hide_video
+from app.models.DEEP_STEGO.reveal_video import reveal_video
+from app.models.DEEP_STEGO.Utils import video_io
 from app.models.encryption import aes
 
 from PyQt5.QtCore import QFile, QTextStream
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon, QPixmap, QFont
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QIcon, QPixmap, QFont, QImage
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, \
-    QMessageBox, QFileDialog, QDialog, QRadioButton, QButtonGroup, QScrollArea
+    QMessageBox, QFileDialog, QDialog, QRadioButton, QButtonGroup, QScrollArea, QProgressBar
 
 from app.ui.components.backgroundwidget import BackgroundWidget
 from app.ui.components.customtextbox import CustomTextBox, CustomTextBoxForImageGen
@@ -27,6 +30,43 @@ def ASSET(rel_path):
     """Resolve a path relative to app/ui/ so the app runs from any working directory."""
     return str(UI_DIR / rel_path)
 
+
+VIDEO_FILTER = "Videos (*.mp4 *.avi *.mkv *.mov *.m4v *.webm);;All files (*)"
+
+
+def preview_pixmap(path, fallback="assets/dummy_images/image_dummy.png"):
+    """QPixmap of an image or of a video's first frame; the dummy image if neither loads."""
+    if path and video_io.is_video(path):
+        frame = video_io.first_frame(path)
+        if frame is not None:
+            height, width, _ = frame.shape
+            image = QImage(frame.tobytes(), width, height, 3 * width, QImage.Format_RGB888)
+            return QPixmap.fromImage(image.copy())
+    elif path:
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            return pixmap
+    return QPixmap(ASSET(fallback))
+
+
+class VideoWorker(QThread):
+    """Runs hide_video / reveal_video off the UI thread so the window stays responsive."""
+    progress = pyqtSignal(int, int)
+    done = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, func, *args):
+        super().__init__()
+        self.func = func
+        self.args = args
+
+    def run(self):
+        try:
+            output = self.func(*self.args, progress=self.progress.emit)
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+        else:
+            self.done.emit(output)
 
 
 class MainAppWindow(QMainWindow):
@@ -63,6 +103,15 @@ class MainAppWindow(QMainWindow):
         self.image_label = None
         self.low_res_image_filepath = None
         self.download_HR_button = None
+        self.cover_video_filepath = None
+        self.secret_video_filepath = None
+        self.stego_video_filepath = None
+        self.video_result_label = None
+        self.video_progress_bar = None
+        self.video_status_label = None
+        self.video_page_buttons = []
+        self.video_error_title = None
+        self.video_worker = None
 
         # Set window properties
         self.setWindowTitle("StegaWe91")
@@ -108,13 +157,16 @@ class MainAppWindow(QMainWindow):
         decryption_button = QPushButton("Decryption")
         image_hiding_button = QPushButton("Image Hide")
         image_reveal_button = QPushButton("Image Reveal")
-
+        video_hiding_button = QPushButton("Video Hide")
+        video_reveal_button = QPushButton("Video Reveal")
 
         # Connect button signals to their corresponding slots
         encryption_button.clicked.connect(self.show_encryption_page)
         decryption_button.clicked.connect(self.show_decryption_page)
         image_hiding_button.clicked.connect(self.show_image_hiding_page)
         image_reveal_button.clicked.connect(self.show_reveal_page)
+        video_hiding_button.clicked.connect(self.show_video_hiding_page)
+        video_reveal_button.clicked.connect(self.show_video_reveal_page)
 
         # Add buttons to the side navigation layout
         side_layout.addWidget(logo_label)
@@ -123,6 +175,8 @@ class MainAppWindow(QMainWindow):
         side_layout.addWidget(encryption_button)
         side_layout.addWidget(decryption_button)
         side_layout.addWidget(image_reveal_button)
+        side_layout.addWidget(video_hiding_button)
+        side_layout.addWidget(video_reveal_button)
 
         # Add a logout button
         logout_button = QPushButton("Exit")
@@ -130,6 +184,10 @@ class MainAppWindow(QMainWindow):
         logout_button.clicked.connect(self.logout)
         side_layout.addStretch()
         side_layout.addWidget(logout_button)
+
+        # Disabled while a video job runs, so its page is not torn down mid-job
+        self.nav_buttons = [image_hiding_button, encryption_button, decryption_button, image_reveal_button,
+                            video_hiding_button, video_reveal_button, logout_button]
 
         # Set the layout for the side navigation widget
         side_navigation.setLayout(side_layout)
@@ -506,6 +564,201 @@ class MainAppWindow(QMainWindow):
         self.main_layout.addWidget(button_layout_widget)
 
 
+    def show_video_hiding_page(self):
+        self.main_content.set_background_image("")
+        self.cover_video_filepath = None
+        self.secret_video_filepath = None
+        # Clear the main window layout
+        self.clear_main_layout()
+
+        title_label = QLabel("<H2>Video Steganography Hide</H2>")
+        title_label.setStyleSheet("font-size: 24px; color: #ffffff;")
+        title_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(title_label)
+
+        # STEGO model path label
+        model_path_label = QLabel("<h5>Model Path: stegaWe91(capstone)/app/models/DEEP_STEGO/models/hide.h5</h5>")
+        model_path_label.setStyleSheet("font-size: 16px; color: #c6c6c6;")
+        model_path_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(model_path_label)
+
+        # Video info
+        info_label = QLabel("<b><ul><li>Each secret frame is hidden in the matching cover frame</li>"
+                            "<li>Output: 224x224 lossless .avi, no audio, as long as the shorter video</li>"
+                            "<li>Do not re-encode the steg video (mp4, WhatsApp, YouTube): that destroys the secret</li>"
+                            "</ul></b>")
+        info_label.setStyleSheet("font-size: 13px; color: #fae69e;")
+        info_label.setWordWrap(True)
+        info_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(info_label)
+
+        # label layout
+        label_layout = QHBoxLayout()
+        cover_text_label = QLabel("Select cover video:")
+        cover_text_label.setAlignment(Qt.AlignCenter)
+        cover_text_label.setStyleSheet("font-size: 16px; color: #c6c6c6; margin-bottom: 10px; font-weight: bold;")
+        label_layout.addWidget(cover_text_label)
+
+        secret_text_label = QLabel("Select secret video:")
+        secret_text_label.setAlignment(Qt.AlignCenter)
+        secret_text_label.setStyleSheet("font-size: 16px; color: #c6c6c6; margin-bottom: 10px; font-weight: bold;")
+        label_layout.addWidget(secret_text_label)
+
+        steg_text_label = QLabel("Generated steg video:")
+        steg_text_label.setAlignment(Qt.AlignCenter)
+        steg_text_label.setStyleSheet("font-size: 16px; color: #00ff00; margin-bottom: 10px; font-weight: bold;")
+        label_layout.addWidget(steg_text_label)
+
+        label_layout_widget = QWidget()
+        label_layout_widget.setLayout(label_layout)
+        self.main_layout.addWidget(label_layout_widget)
+
+        # Video preview layout (first frame of each video)
+        image_display_layout = QHBoxLayout()
+        cover_display_label = QLabel()
+        cover_display_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(ASSET("assets/dummy_images/cover_image_dummy.png"))
+        cover_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+        image_display_layout.addWidget(cover_display_label)
+
+        secret_display_label = QLabel()
+        secret_display_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(ASSET("assets/dummy_images/secret_image_dummy.png"))
+        secret_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+        image_display_layout.addWidget(secret_display_label)
+
+        steg_display_label = QLabel()
+        steg_display_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(ASSET("assets/dummy_images/steg_image_dummy.png"))
+        steg_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+        image_display_layout.addWidget(steg_display_label)
+
+        image_display_layout_widget = QWidget()
+        image_display_layout_widget.setLayout(image_display_layout)
+        self.main_layout.addWidget(image_display_layout_widget)
+
+        self.add_video_progress_widgets()
+
+        # button layout
+        button_layout = QHBoxLayout()
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(lambda: self.show_video_hiding_page())
+        button_layout.addWidget(clear_button)
+
+        browse_cover_button = QPushButton("Browse cover video")
+        browse_cover_button.clicked.connect(
+            lambda: self.select_video("cover_video_filepath", cover_display_label, "Select cover video"))
+        button_layout.addWidget(browse_cover_button)
+
+        browse_secret_button = QPushButton("Browse secret video")
+        browse_secret_button.clicked.connect(
+            lambda: self.select_video("secret_video_filepath", secret_display_label, "Select secret video"))
+        button_layout.addWidget(browse_secret_button)
+
+        hide_button = QPushButton("Hide")
+        hide_button.clicked.connect(
+            lambda: self.perform_video_hide(self.cover_video_filepath, self.secret_video_filepath, steg_display_label))
+        button_layout.addWidget(hide_button)
+
+        self.video_page_buttons = [clear_button, browse_cover_button, browse_secret_button, hide_button]
+
+        button_layout_widget = QWidget()
+        button_layout_widget.setLayout(button_layout)
+        self.main_layout.addWidget(button_layout_widget)
+
+    def show_video_reveal_page(self):
+        self.main_content.set_background_image("")
+        self.stego_video_filepath = None
+        self.clear_main_layout()
+
+        title_label = QLabel("<H2>Video Steganography Reveal</H2>")
+        title_label.setStyleSheet("font-size: 24px; color: #ffffff;")
+        title_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(title_label)
+
+        # STEGO CNN model path label
+        model_path_label = QLabel("<h5>Model Path: stegaWe91(capstone)/app/models/DEEP_STEGO/models/reveal.h5</h5>")
+        model_path_label.setStyleSheet("font-size: 16px; color: #c6c6c6;")
+        model_path_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(model_path_label)
+
+        # Video info
+        info_label = QLabel("<b><ul><li>Select the steg video (decrypt it first if it was encrypted)</li></ul></b>")
+        info_label.setStyleSheet("font-size: 13px; color: #fae69e;")
+        info_label.setWordWrap(True)
+        info_label.setAlignment(Qt.AlignTop)
+        self.main_layout.addWidget(info_label)
+
+        # video text layout
+        image_text_layout = QHBoxLayout()
+        container_text_label = QLabel("Select steg video:")
+        container_text_label.setAlignment(Qt.AlignCenter)
+        container_text_label.setStyleSheet("font-size: 16px; color: #c6c6c6; margin-bottom: 10px; font-weight: bold;")
+        image_text_layout.addWidget(container_text_label)
+
+        secret_out_text_label = QLabel("Revealed secret video:")
+        secret_out_text_label.setAlignment(Qt.AlignCenter)
+        secret_out_text_label.setStyleSheet("font-size: 16px; color: #00ff00; margin-bottom: 10px; font-weight: bold;")
+        image_text_layout.addWidget(secret_out_text_label)
+
+        image_text_layout_widget = QWidget()
+        image_text_layout_widget.setLayout(image_text_layout)
+        self.main_layout.addWidget(image_text_layout_widget)
+
+        # Video preview layout (first frame of each video)
+        image_layout = QHBoxLayout()
+        container_display_label = QLabel()
+        container_display_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(ASSET("assets/dummy_images/steg_image_dummy.png"))
+        container_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+        image_layout.addWidget(container_display_label)
+
+        secret_out_display_label = QLabel()
+        secret_out_display_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(ASSET("assets/dummy_images/secret_image_dummy.png"))
+        secret_out_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+        image_layout.addWidget(secret_out_display_label)
+
+        image_layout_widget = QWidget()
+        image_layout_widget.setLayout(image_layout)
+        self.main_layout.addWidget(image_layout_widget)
+
+        self.add_video_progress_widgets()
+
+        # button layout
+        button_layout = QHBoxLayout()
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(lambda: self.show_video_reveal_page())
+        button_layout.addWidget(clear_button)
+
+        browse_stego_button = QPushButton("Browse steg video")
+        browse_stego_button.clicked.connect(
+            lambda: self.select_video("stego_video_filepath", container_display_label, "Select steg video"))
+        button_layout.addWidget(browse_stego_button)
+
+        reveal_button = QPushButton("Reveal")
+        reveal_button.clicked.connect(
+            lambda: self.perform_video_reveal(self.stego_video_filepath, secret_out_display_label))
+        button_layout.addWidget(reveal_button)
+
+        self.video_page_buttons = [clear_button, browse_stego_button, reveal_button]
+
+        button_layout_widget = QWidget()
+        button_layout_widget.setLayout(button_layout)
+        self.main_layout.addWidget(button_layout_widget)
+
+    def add_video_progress_widgets(self):
+        self.video_progress_bar = QProgressBar()
+        self.video_progress_bar.setValue(0)
+        self.video_progress_bar.setFormat("%v / %m frames")
+        self.main_layout.addWidget(self.video_progress_bar)
+
+        self.video_status_label = QLabel("")
+        self.video_status_label.setStyleSheet("font-size: 14px; color: #c6c6c6;")
+        self.video_status_label.setWordWrap(True)
+        self.main_layout.addWidget(self.video_status_label)
+
+
     def clear_main_layout(self):
         # Remove all widgets from the main layout
         while self.main_layout.count():
@@ -542,7 +795,7 @@ class MainAppWindow(QMainWindow):
         filepath, _ = file_dialog.getOpenFileName(self, "Select Image")
         if filepath:
             self.image_tobe_enc_filepath = filepath
-            pixmap = QPixmap(filepath)
+            pixmap = preview_pixmap(filepath)
             label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
 
     def select_dec_image(self, label):
@@ -552,6 +805,63 @@ class MainAppWindow(QMainWindow):
             self.enc_filepath = filepath
             pixmap = QPixmap(ASSET("assets/dummy_images/locked_image_dummy.png"))
             label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+
+    def select_video(self, attr, label, title):
+        filepath, _ = QFileDialog.getOpenFileName(self, title, "", VIDEO_FILTER)
+        if filepath:
+            setattr(self, attr, filepath)
+            label.setPixmap(preview_pixmap(filepath).scaled(256, 256, Qt.KeepAspectRatio))
+
+    def perform_video_hide(self, cover_filepath, secret_filepath, result_label):
+        if cover_filepath is None or secret_filepath is None:
+            QMessageBox.information(self, "Hiding Error", "Please select the videos first.")
+            return
+        self.start_video_job(hide_video, (cover_filepath, secret_filepath), result_label, "Video Hiding Error")
+
+    def perform_video_reveal(self, filepath, result_label):
+        if filepath is None:
+            QMessageBox.information(self, "Revealing Error", "Please select the video first.")
+            return
+        self.start_video_job(reveal_video, (filepath,), result_label, "Video Revealing Error")
+
+    def start_video_job(self, func, args, result_label, error_title):
+        self.set_video_controls_enabled(False)
+        self.video_result_label = result_label
+        self.video_error_title = error_title
+        self.video_progress_bar.setValue(0)
+        self.video_status_label.setText("Processing ...")
+
+        self.video_worker = VideoWorker(func, *args)
+        self.video_worker.progress.connect(self.on_video_progress)
+        self.video_worker.done.connect(self.on_video_done)
+        self.video_worker.failed.connect(self.on_video_failed)
+        self.video_worker.start()
+
+    def on_video_progress(self, done, total):
+        self.video_progress_bar.setMaximum(total)
+        self.video_progress_bar.setValue(done)
+
+    def on_video_done(self, output_filepath):
+        self.set_video_controls_enabled(True)
+        self.video_result_label.setPixmap(preview_pixmap(output_filepath).scaled(256, 256, Qt.KeepAspectRatio))
+        self.video_status_label.setText(f"Saved to {output_filepath}")
+
+    def on_video_failed(self, message):
+        self.set_video_controls_enabled(True)
+        self.video_status_label.setText("Failed.")
+        QMessageBox.critical(self, self.video_error_title, message)
+
+    def set_video_controls_enabled(self, enabled):
+        for button in self.nav_buttons + self.video_page_buttons:
+            button.setEnabled(enabled)
+
+    def closeEvent(self, event):
+        # Closing while the worker thread runs would destroy a running QThread
+        if self.video_worker is not None and self.video_worker.isRunning():
+            QMessageBox.information(self, "Please wait", "A video is still being processed.")
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def perform_hide(self, cover_filepath, secret_filepath):
         if cover_filepath is None or secret_filepath is None:
@@ -618,10 +928,16 @@ class MainAppWindow(QMainWindow):
             else:
                 result, dec_filename = aes.decrypt(filepath, aes.bobKey)
 
+            if result != 0:
+                QMessageBox.warning(self, "Decrypting Error",
+                                    "Wrong key: this file was not encrypted with the current E91 key. "
+                                    "The key is regenerated every time the app starts.")
+                return
+
             self.download_dec_button.setEnabled(True)
             self.dec_img_text_label.setStyleSheet(
                 "font-size: 16px; color: #00ff00; margin-bottom: 10px; font-weight: bold;")
-            pixmap = QPixmap(dec_filename)
+            pixmap = preview_pixmap(dec_filename)
             self.dec_display_label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
             self.key_text_box_of_dec.setText("")
         except:
@@ -668,9 +984,10 @@ class MainAppWindow(QMainWindow):
 
 
 # Create the application
-QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-app = QApplication(sys.argv)
-window = MainAppWindow()
-window.load_stylesheet()
-window.show()
-sys.exit(app.exec_())
+if __name__ == "__main__":
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    app = QApplication(sys.argv)
+    window = MainAppWindow()
+    window.load_stylesheet()
+    window.show()
+    sys.exit(app.exec_())
