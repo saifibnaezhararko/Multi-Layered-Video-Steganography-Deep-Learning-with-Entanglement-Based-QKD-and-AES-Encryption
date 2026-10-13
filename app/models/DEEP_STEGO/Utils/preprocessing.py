@@ -16,3 +16,15 @@ def denormalize_batch(images, should_clip=True):
     if should_clip:
         images = np.clip(images, 0, 1)
     return images
+
+
+def to_model_input(images):
+    """uint8 RGB batch -> normalized model input (same steps as hide_image/reveal_image)"""
+
+    return normalize_batch(np.asarray(images) / 255.0)
+
+
+def from_model_output(images):
+    """Model output -> uint8 RGB batch (same steps as hide_image/reveal_image)"""
+
+    return np.uint8(denormalize_batch(images) * 255.0)

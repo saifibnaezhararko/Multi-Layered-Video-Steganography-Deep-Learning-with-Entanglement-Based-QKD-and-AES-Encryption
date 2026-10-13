@@ -53,9 +53,61 @@ Baluja er "Hiding Images in Plain Sight" paper er moto CNN based approach.
 - **`checkpoints/`** – training checkpoint (`steg_model-06-0.03.hdf5`).
 - **`Utils/`** – helper: `preprocessing.py` (normalize), `customLossWeight.py` (loss), `eval.py`, `enhance.py` (opencv), `test.py`.
 
-## 3. `app/ui/` – GUI (`main.py`, 676 line)
+## 2b. Video Steganography (video-in-video)
 
-`MainAppWindow` class, dark theme. Left sidebar e 4 ta button:
+Secret video er frame *i* ke cover video er frame *i* er bhitore lukano hoy, same `hide.h5` / `reveal.h5` model diye (frame-by-frame, batch e).
+
+- **`hide_video.py`** – `hide_video(cover, secret)` → `videos/steg_video.avi`
+- **`reveal_video.py`** – `reveal_video(stego)` → `videos/secret_out_video.avi`
+- **`Utils/video_io.py`** – OpenCV diye frame read/write (BGR↔RGB, 224×224 resize, lossless writer)
+
+Terminal theke (repo root e):
+```
+python -m app.models.DEEP_STEGO.hide_video --cover cover.mp4 --secret secret.mp4
+python -m app.models.DEEP_STEGO.reveal_video --stego videos/steg_video.avi
+```
+(`--max-frames 30` dile shudhu prothom 30 frame – quick test er jonno; CPU te frame beshi hole shomoy beshi lage.)
+
+QKD + AES same thake: steg video (`.avi`) ke Encryption page e encrypt kora jay (E91 key → SHA-256 → AES), decrypt korle `steg_video.dec.avi` hoy, tarpor Video Reveal.
+
+⚠️ Note:
+- Steg video **lossless** (PNG-in-AVI) – eta mp4 e convert korle ba WhatsApp/YouTube e upload korle hidden video nosto hoye jay.
+- Output **224×224**, audio nei, frame shonkhya = duita video er moddhe chhoto tar shoman, fps = cover er fps.
+- E91 key protibar app start e notun hoy, tai encrypt ar decrypt same session e korte hobe.
+
+## 2c. Audio Steganography (`app/models/AUDIO_STEGO/`)
+
+Cover hocche ekta **WAV audio**, secret hote pare **je kono file** (text, image, audio clip, steg video) ba ekta **text message**. Ekhane order ulta: age **encrypt**, tarpor **lukano** – tai je file pathano hoy sheta shunte shadharon gaan/audio er motoi, dekhe bojha jay na je bhitore kichu ache.
+
+**Flow:**
+1. Secret → **AES-256-GCM** encrypt (key = E91 key er SHA-256, image/video er moto same key)
+2. Encrypted data → cover audio er sample gulor **LSB (least significant bit)** e boshano hoy
+3. Kon kon sample e bit boshbe sheta **key diye shuffle** kora – tai change gulo pura file e chhoriye thake, key chhara khuje pawa jay na
+4. Secret fit korate joto kom LSB lage (1–4) sheta nijei choose kore (`--bits` diye fix kora jay)
+
+- **`audio_lsb.py`** – WAV read/write, bit embed/extract, capacity hishab (8/16/24/32-bit PCM, mono/stereo)
+- **`hide_audio.py`** – `hide_audio(cover, secret_file, key, message=...)` → `audio/steg_audio.wav`
+- **`reveal_audio.py`** – `reveal_audio(stego, key)` → `audio/revealed/<original file name>`
+- **`app/models/encryption/aes_payload.py`** – AES-GCM (bhul key ba file e ekta bit change holeo dhora pore)
+- **`app/models/encryption/keyfile.py`** – E91 key file e save/load (CLI te hide ar reveal alada process e chole, tai key file lage)
+
+Terminal theke (repo root e):
+```
+python -m app.models.AUDIO_STEGO.hide_audio --cover cover.wav --secret secret.png
+python -m app.models.AUDIO_STEGO.hide_audio --cover cover.wav --message "5 tay dekha hobe"
+python -m app.models.AUDIO_STEGO.reveal_audio --stego audio/steg_audio.wav
+```
+Prothombar hide korle E91 simulation chole ar key `audio/e91_key.txt` e save hoy; reveal sheta use kore (`--key-file` diye onno file deya jay). **Key file kauke diba na / git e dibe na** (`audio/` gitignored).
+
+⚠️ Note:
+- Shudhu **WAV** (uncompressed PCM). MP3/AAC hole age WAV e convert koro (Audacity ba ffmpeg).
+- Steg audio ke mp3 e convert korle ba WhatsApp e voice hishebe pathale hidden data nosto hoye jay (reveal e error dibe).
+- Capacity: 44.1 kHz stereo 16-bit audio te proti second e ~11 KB (1 LSB) – 30 second e ~322 KB, 4 LSB e ~1.3 MB.
+- Quality: 16-bit cover e 1 LSB e SNR ~80–110 dB (shona jay na). 8-bit cover e change beshi (SNR ~55 dB).
+
+## 3. `app/ui/` – GUI (`main.py`)
+
+`MainAppWindow` class, dark theme. Left sidebar e 8 ta button:
 
 | Button | Kaj |
 |---|---|
@@ -63,6 +115,10 @@ Baluja er "Hiding Images in Plain Sight" paper er moto CNN based approach.
 | **Encryption** | image select → `aes.encrypt(file, aes.aliceKey)` |
 | **Decryption** | encrypted file → `aes.decrypt(file, aes.bobKey)` |
 | **Image Reveal** | steg image → `reveal_image()` → secret ferot |
+| **Video Hide** | cover + secret video → `hide_video()` → steg video (background thread, progress bar) |
+| **Video Reveal** | steg video → `reveal_video()` → secret video ferot |
+| **Audio Hide** | cover WAV + secret file / message → `hide_audio()` (aliceKey diye encrypt) → steg audio |
+| **Audio Reveal** | steg WAV → `reveal_audio()` (bobKey) → secret ferot; image hole preview, text hole message dekhay |
 
 - `components/` – custom background widget, text box
 - `styles/style.qss` – styling
