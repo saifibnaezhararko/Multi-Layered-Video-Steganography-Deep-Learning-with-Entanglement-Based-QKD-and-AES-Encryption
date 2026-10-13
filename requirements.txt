@@ -4,7 +4,7 @@ keras>=3.12
 numpy
 pillow
 imageio
-opencv-python   # only used by app/models/DEEP_STEGO/Utils/enhance.py
+opencv-python   # video hide/reveal (Utils/video_io.py) and Utils/enhance.py
 matplotlib
 PyQt5
 pycryptodome

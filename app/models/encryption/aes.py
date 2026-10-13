@@ -1,5 +1,6 @@
 from base64 import b64encode, b64decode
 import hashlib
+from pathlib import Path
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
@@ -183,8 +184,9 @@ def decrypt(encrypted_image_path, key):
         # Decode the decrypted image data from a base64 string
         decrypted_image_data = b64decode(decrypted_image_data)
 
-        # Save the decrypted image data to a new file
-        filename = encrypted_image_path.replace('.png', '').replace('.jpg', '') + '.dec' + '.png'
+        # Save the decrypted data next to the input, keeping its extension (x.png -> x.dec.png, x.avi -> x.dec.avi)
+        path = Path(encrypted_image_path)
+        filename = str(path.with_name(path.stem + '.dec' + (path.suffix or '.png')))
         with open(filename, 'wb') as f:
             f.write(decrypted_image_data)
 
