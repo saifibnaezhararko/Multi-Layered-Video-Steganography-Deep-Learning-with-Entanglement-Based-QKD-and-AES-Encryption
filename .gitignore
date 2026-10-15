@@ -1,2 +1,5 @@
 # Generated video outputs (hide_video / reveal_video)
-videos/
+videos/*
+# ...except the sample input videos
+!videos/Megamind.avi
+!videos/vtest.avi

@@ -59,7 +59,7 @@ There is no test suite, linter or CI. Verify changes with scripts as described u
 - **`hide_video.py` / `reveal_video.py` + `Utils/video_io.py`:**
   - Frame i of the secret is hidden in frame i of the cover, in batches.
   - Output is 224×224, uses the cover's fps (25 if unknown), and has as many frames as the shorter video. There is no audio.
-  - Output goes to `videos/`, which is gitignored.
+  - Output goes to `videos/`, which is gitignored except for the two tracked sample inputs `videos/Megamind.avi` (720×528, 270 frames) and `videos/vtest.avi` (768×576, 795 frames), both OpenCV sample clips.
   - An optional `progress(done, total)` callback reports progress.
   - OpenCV is BGR and the models are RGB, so `video_io` converts in both directions.
 - **The stego video must be lossless.** `video_io` writes PNG-in-AVI (fourcc `"png "`, which keeps RGB24) and forces the `.avi` suffix.
